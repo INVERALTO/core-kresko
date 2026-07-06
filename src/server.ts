@@ -14,10 +14,11 @@ import {
 } from './god-panel/http/routes/tenants.js';
 import { impersonateTenant, stopImpersonating } from './god-panel/http/routes/impersonate.js';
 import { browseTenantData } from './god-panel/http/routes/browse.js';
+import { systemReset } from './god-panel/http/routes/system-reset.js';
 
 // --- AQUÍ ESTÁN TODAS TUS RUTAS REGISTRADAS ---
 route('GET', '/', serveLoginPage);
-route('POST', '/admin/login', login); // ¡Esta era la que faltaba!
+route('POST', '/admin/login', login);
 route('GET', '/admin/tenants', listTenants);
 route('POST', '/admin/tenants', createTenant);
 route('PATCH', '/admin/tenants/:id/status', updateTenantStatus);
@@ -25,6 +26,7 @@ route('DELETE', '/admin/tenants/:id', deleteTenant);
 route('POST', '/admin/impersonate/:tenantId', impersonateTenant);
 route('POST', '/admin/stop-impersonating', stopImpersonating);
 route('GET', '/admin/data/:model', browseTenantData);
+route('POST', '/admin/system-reset', systemReset);
 // ----------------------------------------------
 
 const PORT = Number(process.env.GOD_PANEL_PORT ?? 3001);
