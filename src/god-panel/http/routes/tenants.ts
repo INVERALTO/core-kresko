@@ -6,7 +6,7 @@ import { serveDashboardPage } from './dashboard-page.js';
 import { adminPrisma } from '../../../core/admin-prisma.js';
 import { assertValidTenantId, normalizeTenantId, TenantValidationError } from '../../../tenancy/tenant-id.js';
 import { TenantManager } from '../../../tenancy/tenant-manager.js';
-import { provisionTenantDatabase, TenantProvisioningError } from '../../../tenancy/provisioning/tenant-db-provisioner.js';
+import { provisionTenantDatabase, dropTenantDatabase, TenantProvisioningError } from '../../../tenancy/provisioning/tenant-db-provisioner.js';
 
 const TENANT_SELECT = {
   id: true,
@@ -58,12 +58,17 @@ export async function listTenants(req: AdminRequest, res: ServerResponse): Promi
   const session = requireSuperAdmin(req, res);
   if (!session) return;
 
-  const tenants = await adminPrisma.tenant.findMany({
-    select: TENANT_SELECT,
-    orderBy: { createdAt: 'desc' },
-  });
+  try {
+    const tenants = await adminPrisma.tenant.findMany({
+      select: TENANT_SELECT,
+      orderBy: { createdAt: 'desc' },
+    });
 
-  sendJson(res, 200, { tenants, impersonating: session.impersonating ?? null });
+    sendJson(res, 200, { tenants, impersonating: session.impersonating ?? null });
+  } catch (err) {
+    console.error('[god-panel] Error listando tenants:', err);
+    sendJson(res, 500, { error: 'Error listando tenants' });
+  }
 }
 
 /**
@@ -112,25 +117,37 @@ export async function createTenant(
 
   let tenant;
   try {
+    console.log(`[god-panel] Creando tenant en catálogo: ${id}`);
     tenant = await adminPrisma.tenant.create({
       data: { id, slug, name, status: TenantStatus.ACTIVE },
       select: TENANT_SELECT,
     });
+    console.log(`[god-panel] ✓ Tenant insertado en catálogo: ${id}`);
   } catch (err) {
     if (isUniqueConstraintError(err)) {
       sendJson(res, 409, { error: `Ya existe un tenant con ese id o slug (${id} / ${slug})` });
       return;
     }
-    throw err;
+    console.error('[god-panel] Error creando tenant en catálogo:', err);
+    sendJson(res, 500, { error: 'Error creando tenant en catálogo' });
+    return;
   }
 
   try {
+    console.log(`[god-panel] Aprovisionando base física para: ${id}`);
     await provisionTenantDatabase(id);
+    console.log(`[god-panel] ✓ Base física aprovisionada para: ${id}`);
   } catch (err) {
+    console.error(`[god-panel] Error aprovisionando base física. Revertiendo catálogo para ${id}...`, err);
+
     // Rollback: sin base física no dejamos el registro en el catálogo.
-    await adminPrisma.tenant.delete({ where: { id } }).catch((rollbackErr) => {
-      console.error(`[god-panel] rollback de catálogo falló para tenant ${id}:`, rollbackErr);
-    });
+    try {
+      await adminPrisma.tenant.delete({ where: { id } });
+      console.log(`[god-panel] ✓ Rollback: tenant borrado del catálogo`);
+    } catch (rollbackErr) {
+      console.error(`[god-panel] ✗ Rollback FALLÓ: no se pudo borrar tenant ${id} del catálogo:`, rollbackErr);
+      console.error('[god-panel] ⚠️ TENANT HUÉRFANO EN CATÁLOGO! Borrar manualmente o usar DELETE /admin/tenants/:id?hard=true');
+    }
 
     const message =
       err instanceof TenantProvisioningError
@@ -170,6 +187,7 @@ export async function updateTenantStatus(
   }
 
   try {
+    console.log(`[god-panel] Actualizando status de tenant ${id} a: ${status}`);
     const tenant = await adminPrisma.tenant.update({
       where: { id },
       data: { status: status as TenantStatus },
@@ -180,13 +198,15 @@ export async function updateTenantStatus(
       await TenantManager.closeTenant(id);
     }
 
+    console.log(`[god-panel] ✓ Status actualizado para ${id}`);
     sendJson(res, 200, { tenant });
   } catch (err) {
     if (isNotFoundError(err)) {
       sendJson(res, 404, { error: 'Tenant no encontrado' });
       return;
     }
-    throw err;
+    console.error('[god-panel] Error actualizando status:', err);
+    sendJson(res, 500, { error: 'Error actualizando status del tenant' });
   }
 }
 
@@ -201,6 +221,9 @@ export async function updateTenantStatus(
  * No implico un DROP DATABASE aquí porque no hay ningún mecanismo de
  * aprovisionamiento/desaprovisionamiento físico en el proyecto que
  * indique cómo debe hacerse eso de forma segura.
+ *
+ * Con ?hard=true&dropDb=true SÍÍÍ borra la base física junto con la fila.
+ * Úsalo para limpiar tenants huérfanos.
  */
 export async function deleteTenant(
   req: AdminRequest,
@@ -212,31 +235,57 @@ export async function deleteTenant(
   if (!session) return;
 
   const id = params.id;
-  // El router (router.ts) no separa el query string en un parámetro propio,
+  // El router (router.ts) no separa el query string en un par��metro propio,
   // así que lo leemos aquí igual que hace `dispatch()` para el pathname.
   const url = new URL(req.url ?? '', 'http://localhost');
   const hard = url.searchParams.get('hard') === 'true';
+  const dropDb = url.searchParams.get('dropDb') === 'true';
+
+  console.log(`[god-panel] Eliminando tenant ${id} (hard=${hard}, dropDb=${dropDb})`);
 
   await TenantManager.closeTenant(id);
 
   try {
     if (hard) {
+      // Si es hard delete Y pide dropDb, primero elimina la base física
+      if (dropDb) {
+        try {
+          console.log(`[god-panel] Eliminando base física de ${id}...`);
+          await dropTenantDatabase(id);
+          console.log(`[god-panel] ✓ Base física eliminada para ${id}`);
+        } catch (dropErr) {
+          console.error(`[god-panel] Error eliminando base física:`, dropErr);
+          sendJson(res, 500, { 
+            error: `No se pudo eliminar la base física del tenant: ${
+              dropErr instanceof TenantProvisioningError ? dropErr.message : 'Error desconocido'
+            }` 
+          });
+          return;
+        }
+      }
+
+      // Ahora sí, borra del catálogo
+      console.log(`[god-panel] Borrando tenant del catálogo (hard delete): ${id}`);
       await adminPrisma.tenant.delete({ where: { id } });
-      sendJson(res, 200, { ok: true, hard: true });
+      console.log(`[god-panel] ��� Tenant eliminado completamente`);
+      sendJson(res, 200, { ok: true, hard: true, dbDropped: dropDb });
       return;
     }
 
+    // Soft delete: cambiar status a ARCHIVED
     const tenant = await adminPrisma.tenant.update({
       where: { id },
       data: { status: TenantStatus.ARCHIVED },
       select: TENANT_SELECT,
     });
+    console.log(`[god-panel] ✓ Tenant archivado (soft delete): ${id}`);
     sendJson(res, 200, { ok: true, hard: false, tenant });
   } catch (err) {
     if (isNotFoundError(err)) {
       sendJson(res, 404, { error: 'Tenant no encontrado' });
       return;
     }
-    throw err;
+    console.error('[god-panel] Error borrando tenant:', err);
+    sendJson(res, 500, { error: 'Error borrando tenant' });
   }
 }
