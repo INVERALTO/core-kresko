@@ -201,6 +201,52 @@ const PAGE = /* html */ `<!doctype html>
     color: #3d4750;
     text-align: center;
   }
+
+  /* Modal de reset */
+  .modal-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.7);
+    z-index: 1000;
+    align-items: center;
+    justify-content: center;
+  }
+  .modal-overlay.open { display: flex; }
+  .modal {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 24px;
+    max-width: 400px;
+    width: 90%;
+  }
+  .modal h2 {
+    margin: 0 0 16px;
+    font-size: 18px;
+    color: var(--danger);
+  }
+  .modal p {
+    color: var(--muted);
+    font-size: 13px;
+    margin: 0 0 16px;
+    line-height: 1.5;
+  }
+  .modal-field {
+    margin-bottom: 16px;
+  }
+  .modal-field input {
+    width: 100%;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 10px;
+    background: #0d1013;
+  }
+  .modal-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+  }
 </style>
 </head>
 <body>
@@ -214,6 +260,7 @@ const PAGE = /* html */ `<!doctype html>
       <div style="display:flex; gap:8px;">
         <button class="ghost small" id="refreshBtn" type="button">↻ Refrescar</button>
         <button id="toggleCreateBtn" type="button">+ Nuevo tenant</button>
+        <button class="danger small" id="resetBtn" type="button">🔴 Reset Sistema</button>
       </div>
     </div>
 
@@ -260,6 +307,29 @@ const PAGE = /* html */ `<!doctype html>
     <div class="foot">SUPERADMIN · GOD PANEL · KRESKO CORE</div>
   </div>
 
+  <!-- Modal de confirmación de reset -->
+  <div class="modal-overlay" id="resetModal">
+    <div class="modal">
+      <h2>⚠️ Reset Completo del Sistema</h2>
+      <p>Esta acción es <strong>IRREVERSIBLE</strong>. Se eliminará:</p>
+      <ul style="color: var(--muted); font-size: 13px; margin: 0 0 16px;">
+        <li>Todos los tenants del catálogo</li>
+        <li>Todas las bases de datos físicas de tenants</li>
+        <li>Todos los datos de todos los tenants</li>
+      </ul>
+      <p style="color: var(--danger);">Solo se conservará la base de datos admin (kresko_admin).</p>
+      <div class="modal-field">
+        <label style="display: block; margin-bottom: 6px;">Contraseña de confirmación:</label>
+        <input type="password" id="resetPassword" placeholder="Ingresa la contraseña" />
+      </div>
+      <div class="modal-actions">
+        <button class="ghost" id="resetCancelBtn" type="button">Cancelar</button>
+        <button class="danger" id="resetConfirmBtn" type="button" disabled>CONFIRMAR RESET</button>
+      </div>
+      <div id="resetStatus" style="margin-top: 12px; font-size: 12px; text-align: center; min-height: 16px;"></div>
+    </div>
+  </div>
+
 <script>
   const tenantsBody = document.getElementById('tenantsBody');
   const toggleCreateBtn = document.getElementById('toggleCreateBtn');
@@ -268,6 +338,12 @@ const PAGE = /* html */ `<!doctype html>
   const createStatus = document.getElementById('createStatus');
   const createSubmitBtn = document.getElementById('createSubmitBtn');
   const refreshBtn = document.getElementById('refreshBtn');
+  const resetBtn = document.getElementById('resetBtn');
+  const resetModal = document.getElementById('resetModal');
+  const resetPassword = document.getElementById('resetPassword');
+  const resetConfirmBtn = document.getElementById('resetConfirmBtn');
+  const resetCancelBtn = document.getElementById('resetCancelBtn');
+  const resetStatus = document.getElementById('resetStatus');
 
   function setCreateStatus(text, mode) {
     createStatus.textContent = text || '';
@@ -357,7 +433,7 @@ const PAGE = /* html */ `<!doctype html>
       const btn = e.currentTarget;
       btn.disabled = true;
       try {
-        await api('/admin/tenants/' + tenant.id + '?hard=true', { method: 'DELETE' });
+        await api('/admin/tenants/' + tenant.id + '?hard=true&dropDb=true', { method: 'DELETE' });
         await loadTenants();
       } catch (err) {
         alert(err.message);
@@ -392,14 +468,55 @@ const PAGE = /* html */ `<!doctype html>
 
   refreshBtn.addEventListener('click', () => loadTenants());
 
+  resetBtn.addEventListener('click', () => {
+    resetModal.classList.add('open');
+    resetPassword.value = '';
+    resetPassword.focus();
+    resetStatus.textContent = '';
+    resetConfirmBtn.disabled = true;
+  });
+
+  resetCancelBtn.addEventListener('click', () => {
+    resetModal.classList.remove('open');
+  });
+
+  resetPassword.addEventListener('input', (e) => {
+    resetConfirmBtn.disabled = !e.target.value;
+  });
+
+  resetConfirmBtn.addEventListener('click', async () => {
+    const pwd = resetPassword.value;
+    if (!pwd) {
+      resetStatus.textContent = 'Ingresa la contraseña';
+      resetStatus.style.color = 'var(--danger)';
+      return;
+    }
+
+    resetConfirmBtn.disabled = true;
+    resetStatus.textContent = 'Procesando...';
+    resetStatus.style.color = 'var(--muted)';
+
+    try {
+      await api('/admin/system-reset', { method: 'POST', body: JSON.stringify({ confirmPassword: pwd }) });
+      resetStatus.textContent = '✓ Sistema restablecido exitosamente';
+      resetStatus.style.color = 'var(--ok)';
+      setTimeout(() => {
+        resetModal.classList.remove('open');
+        loadTenants();
+      }, 1500);
+    } catch (err) {
+      resetStatus.textContent = err.message;
+      resetStatus.style.color = 'var(--danger)';
+      resetConfirmBtn.disabled = false;
+    }
+  });
+
   createForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     const slug = document.getElementById('slug').value.trim();
     const name = document.getElementById('name').value.trim();
 
     createSubmitBtn.disabled = true;
-    // El aprovisionamiento físico (CREATE DATABASE + prisma db push) tarda
-    // varios segundos; avisamos para que no parezca colgado.
     setCreateStatus('creando catálogo y aprovisionando base física — puede tardar unos segundos…');
 
     try {
