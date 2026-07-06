@@ -29,10 +29,15 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Pool } from 'pg';
 import { assertValidTenantId } from '../tenant-id.js';
 
 const execFileAsync = promisify(execFile);
+
+// ESM polyfill para __dirname
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const DB_HOST = process.env.TENANT_DB_HOST ?? 'localhost';
 const DB_PORT = Number(process.env.TENANT_DB_PORT ?? 5432);
