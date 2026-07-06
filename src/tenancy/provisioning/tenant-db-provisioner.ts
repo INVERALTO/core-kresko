@@ -97,8 +97,7 @@ async function createPhysicalDatabase(tenantId: string): Promise<void> {
 
 /**
  * Paso 2: aplica el schema de Prisma a la base recién creada.
- * Usa node -e para ejecutar prisma en una ventana de comando separada,
- * evitando problemas con espacios en rutas en Windows.
+ * Usa execSync con npx para ejecutar prisma db push
  */
 async function pushTenantSchema(tenantId: string): Promise<void> {
   const dbName = `kresko_tenant_${tenantId}`;
@@ -109,41 +108,22 @@ async function pushTenantSchema(tenantId: string): Promise<void> {
   try {
     console.log(`[provisioner] Ejecutando "prisma db push" en ${dbName}...`);
     
-    // Usa node -e para ejecutar npx prisma, lo cual maneja mejor los espacios en rutas
-    const { stdout, stderr } = await execFileAsync(
-      'node',
-      [
-        '-e',
-        `require('child_process').execSync('npx prisma db push --schema="${schemaPath}" --skip-generate --accept-data-loss', { cwd: '${projectRoot}', env: { ...process.env, DATABASE_URL: '${connectionString}' }, stdio: 'inherit' })`,
-      ],
+    const { execSync } = await import('node:child_process');
+    const output = execSync(
+      `npx prisma db push --schema="${schemaPath}" --accept-data-loss`,
       {
         cwd: projectRoot,
         env: { ...process.env, DATABASE_URL: connectionString },
-      },
+        encoding: 'utf-8',
+      }
     );
     
-    if (stdout) console.log(`[provisioner] prisma stdout: ${stdout}`);
-    if (stderr) console.log(`[provisioner] prisma stderr: ${stderr}`);
+    console.log(`[provisioner] prisma output: ${output}`);
     console.log(`[provisioner] ✓ Schema aplicado exitosamente en ${dbName}`);
   } catch (err) {
-    // Si el comando falla, probamos alternativa más simple
-    console.log(`[provisioner] Intentando método alternativo...`);
-    try {
-      const { execSync } = await import('node:child_process');
-      execSync(
-        `npx prisma db push --schema="${schemaPath}" --skip-generate --accept-data-loss`,
-        {
-          cwd: projectRoot,
-          env: { ...process.env, DATABASE_URL: connectionString },
-          stdio: 'pipe',
-        }
-      );
-      console.log(`[provisioner] ✓ Schema aplicado exitosamente en ${dbName}`);
-    } catch (altErr) {
-      const errorMsg = altErr instanceof Error ? altErr.message : String(altErr);
-      console.error(`[provisioner] ✗ Error en "prisma db push":`, altErr);
-      throw new TenantProvisioningError(`"prisma db push" falló contra "${dbName}": ${errorMsg}`, altErr);
-    }
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    console.error(`[provisioner] ✗ Error en "prisma db push":`, err);
+    throw new TenantProvisioningError(`"prisma db push" falló contra "${dbName}": ${errorMsg}`, err);
   }
 }
 
