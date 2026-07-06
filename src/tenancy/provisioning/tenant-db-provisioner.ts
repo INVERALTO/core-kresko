@@ -71,7 +71,9 @@ async function createPhysicalDatabase(tenantId: string): Promise<void> {
     // El nombre de una base no se puede parametrizar con placeholders ($1)
     // en DDL. Es seguro interpolarlo aquí porque tenantId ya pasó por
     // assertValidTenantId() (solo [a-z0-9_], nunca comillas ni ';').
+    console.log(`[provisioner] Creando base física: ${dbName}`);
     await maintenancePool.query(`CREATE DATABASE "${dbName}"`);
+    console.log(`[provisioner] ✓ Base ${dbName} creada exitosamente`);
   } catch (err) {
     if (isDuplicateDatabaseError(err)) {
       throw new TenantProvisioningError(
@@ -81,7 +83,8 @@ async function createPhysicalDatabase(tenantId: string): Promise<void> {
         err,
       );
     }
-    throw new TenantProvisioningError(`No se pudo crear la base "${dbName}"`, err);
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    throw new TenantProvisioningError(`No se pudo crear la base "${dbName}": ${errorMsg}`, err);
   } finally {
     await maintenancePool.end();
   }
@@ -97,7 +100,8 @@ async function pushTenantSchema(tenantId: string): Promise<void> {
   const schemaPath = path.join(projectRoot, 'prisma', 'schema.prisma');
 
   try {
-    await execFileAsync(
+    console.log(`[provisioner] Ejecutando "prisma db push" en ${dbName}...`);
+    const { stdout, stderr } = await execFileAsync(
       prismaBin,
       ['db', 'push', `--schema=${schemaPath}`, '--skip-generate', '--accept-data-loss'],
       {
@@ -105,8 +109,14 @@ async function pushTenantSchema(tenantId: string): Promise<void> {
         env: { ...process.env, DATABASE_URL: buildConnectionString(dbName) },
       },
     );
+    
+    if (stdout) console.log(`[provisioner] prisma stdout: ${stdout}`);
+    if (stderr) console.log(`[provisioner] prisma stderr: ${stderr}`);
+    console.log(`[provisioner] ✓ Schema aplicado exitosamente en ${dbName}`);
   } catch (err) {
-    throw new TenantProvisioningError(`"prisma db push" falló contra "${dbName}"`, err);
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    console.error(`[provisioner] ✗ Error en "prisma db push":`, err);
+    throw new TenantProvisioningError(`"prisma db push" falló contra "${dbName}": ${errorMsg}`, err);
   }
 }
 
@@ -127,4 +137,25 @@ export async function provisionTenantDatabase(tenantId: string): Promise<void> {
   assertValidTenantId(tenantId);
   await createPhysicalDatabase(tenantId);
   await pushTenantSchema(tenantId);
+}
+
+/**
+ * Elimina la base física de un tenant (DROP DATABASE).
+ * Usado para limpiar tenants huérfanos o al desaprovisionar.
+ */
+export async function dropTenantDatabase(tenantId: string): Promise<void> {
+  assertValidTenantId(tenantId);
+  const dbName = `kresko_tenant_${tenantId}`;
+  const maintenancePool = new Pool({ connectionString: buildConnectionString('postgres') });
+
+  try {
+    console.log(`[provisioner] Eliminando base física: ${dbName}`);
+    await maintenancePool.query(`DROP DATABASE IF EXISTS "${dbName}"`);
+    console.log(`[provisioner] ✓ Base ${dbName} eliminada`);
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    throw new TenantProvisioningError(`No se pudo eliminar la base "${dbName}": ${errorMsg}`, err);
+  } finally {
+    await maintenancePool.end();
+  }
 }
