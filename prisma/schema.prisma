@@ -1,0 +1,43 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Dummy {
+  id String @id @default(uuid())
+}
+
+model User {
+  id    String @id @default(uuid())
+  email String @unique
+  name  String
+}
+
+/// Registro de tenants en el control-plane (kresko_admin).
+/// NO guarda datos de negocio del tenant: solo el catálogo.
+enum TenantStatus {
+  ACTIVE
+  SUSPENDED
+  ARCHIVED
+}
+
+model Tenant {
+  /// Identificador técnico. Se interpola directo en el nombre de la
+  /// base de datos física (`kresko_tenant_{id}`, ver prisma-client-factory.ts)
+  /// y en la cookie de sesión al impersonar. DEBE cumplir el mismo patrón
+  /// que exige assertValidTenantId() en src/tenancy/tenant-id.ts:
+  /// solo minúsculas, números y guion bajo, máx. 63 caracteres.
+  /// NO usar @default(uuid()) aquí: un UUID trae guiones y rompería
+  /// la validación en el primer intento de impersonar.
+  /// Cualquier código que inserte un Tenant debe llamar
+  /// assertValidTenantId(id) ANTES del insert.
+  id        String       @id @db.VarChar(63)
+  /// Slug público/de UI. Puede tener guiones; no se usa para nombrar la BD.
+  slug      String       @unique
+  name      String
+  status    TenantStatus @default(ACTIVE)
+  createdAt DateTime     @default(now())
+}
