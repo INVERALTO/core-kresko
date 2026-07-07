@@ -1,3 +1,4 @@
+// src/god-panel/http/routes/tenants.ts
 import type { ServerResponse } from 'node:http';
 import { TenantStatus } from '@prisma/client';
 import type { AdminRequest } from '../middleware.js';
@@ -6,7 +7,7 @@ import { serveDashboardPage } from './dashboard-page.js';
 import { adminPrisma } from '../../../core/admin-prisma.js';
 import { assertValidTenantId, normalizeTenantId, TenantValidationError } from '../../../tenancy/tenant-id.js';
 import { TenantManager } from '../../../tenancy/tenant-manager.js';
-import { provisionTenantDatabase, dropTenantDatabase, TenantProvisioningError } from '../../../tenancy/provisioning/tenant-db-provisioner.js';
+import { provisionTenantDatabase, dropTenantDatabase, TenantProvisioningError, tenantDatabaseExists } from '../../../tenancy/provisioning/tenant-db-provisioner.js';
 
 const TENANT_SELECT = {
   id: true,
@@ -113,6 +114,39 @@ export async function createTenant(
       return;
     }
     throw err;
+  }
+
+  // Allow forcing recreation when a physical DB already exists only when both
+  // force=true and dropDb=true are provided as explicit confirmations.
+  const url = new URL(req.url ?? '', 'http://localhost');
+  const force = url.searchParams.get('force') === 'true';
+  const dropDb = url.searchParams.get('dropDb') === 'true';
+
+  try {
+    const dbExists = await tenantDatabaseExists(id);
+    if (dbExists) {
+      if (!force || !dropDb) {
+        sendJson(res, 409, {
+          error: `La base física para este tenant ya existe (kresko_tenant_${id}). Para forzar la recreación use ?force=true&dropDb=true.`,
+        });
+        return;
+      }
+
+      // force=true & dropDb=true: attempt to drop the existing database BEFORE creating the catalog row.
+      try {
+        console.log(`[god-panel] Forzando limpieza de la base física existente para ${id} (force & dropDb)`);
+        await dropTenantDatabase(id);
+        console.log(`[god-panel] ✓ Base física eliminada para ${id} (force)`);
+      } catch (dropErr) {
+        console.error(`[god-panel] Error borrando base física en modo force:`, dropErr);
+        sendJson(res, 500, { error: 'No se pudo eliminar la base física existente para forzar la creación.' });
+        return;
+      }
+    }
+  } catch (checkErr) {
+    console.error('[god-panel] Error comprobando existencia de DB antes de crear tenant:', checkErr);
+    sendJson(res, 500, { error: 'Error comprobando estado de la base física del tenant' });
+    return;
   }
 
   let tenant;
@@ -267,7 +301,7 @@ export async function deleteTenant(
       // Ahora sí, borra del catálogo
       console.log(`[god-panel] Borrando tenant del catálogo (hard delete): ${id}`);
       await adminPrisma.tenant.delete({ where: { id } });
-      console.log(`[god-panel] ��� Tenant eliminado completamente`);
+      console.log(`[god-panel] ✓ Tenant eliminado completamente`);
       sendJson(res, 200, { ok: true, hard: true, dbDropped: dropDb });
       return;
     }

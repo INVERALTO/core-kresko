@@ -63,6 +63,27 @@ function isDuplicateDatabaseError(err: unknown): boolean {
 }
 
 /**
+ * Comprueba si la base física para el tenant ya existe.
+ * Útil para validar antes de insertar en el catálogo y evitar tenants huérfanos.
+ */
+export async function tenantDatabaseExists(tenantId: string): Promise<boolean> {
+  assertValidTenantId(tenantId);
+  const dbName = `kresko_tenant_${tenantId}`;
+  const maintenancePool = new Pool({ connectionString: buildConnectionString('postgres') });
+  try {
+    const result = await maintenancePool.query('SELECT 1 FROM pg_database WHERE datname = $1', [dbName]);
+    return (result.rowCount ?? 0) > 0;
+  } catch (err) {
+    throw new TenantProvisioningError(
+      `Error comprobando existencia de la base "${dbName}": ${err instanceof Error ? err.message : String(err)}`,
+      err,
+    );
+  } finally {
+    await maintenancePool.end();
+  }
+}
+
+/**
  * Paso 1: CREATE DATABASE kresko_tenant_{id}.
  * Se conecta a la base de mantenimiento "postgres" porque CREATE DATABASE
  * no puede correr dentro de una transacción ni contra la base que se está
