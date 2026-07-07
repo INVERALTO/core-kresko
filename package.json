@@ -1,12 +1,12 @@
 {
   "name": "kresko-core",
   "version": "0.1.0",
-  "type": "module", 
+  "type": "module",
   "description": "Core multi-tenant de Kresko...",
   "main": "dist/app.js",
   "scripts": {
-    "dev": "ts-node-dev --respawn --transpile-only src/app.ts",
-    "dev:admin": "tsx watch src/server.ts", 
+    "dev": "tsx watch src/app.ts",
+    "dev:admin": "tsx watch src/server.ts",
     "build": "tsc",
     "start": "node dist/app.js",
     "typecheck": "tsc --noEmit"
